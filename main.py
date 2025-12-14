@@ -47,32 +47,57 @@ def get_certificates():
 
 
 def parse_certificates(output):
+    """
+    Парсит вывод certbot certificates и возвращает список сертификатов.
+    Каждый сертификат содержит: name, domains, days_left
+    """
     certs = []
-    blocks = re.split(r"-{40,}", output)
+    
+    # Разделяем вывод на блоки по "Certificate Name"
+    blocks = re.findall(
+        r"Certificate Name:\s*(.+?)(?=(?:\n\s*\n|Certificate Name:|$))",
+        output,
+        re.DOTALL
+    )
+    
     for block in blocks:
-        name_match = re.search(r"Certificate Name:\s*(.+)", block)
-        expiry_match = re.search(r"Expiry Date:\s*([\d\-:\+\s]+)", block)
-        domains_match = re.search(r"Domains:\s*(.+)", block)
+        # Убираем лишние отступы
+        block = block.strip()
         
-        if name_match and expiry_match:
-            name = name_match.group(1).strip()
+        # Ищем имя (уже получено, но проверим)
+        name_match = re.match(r"(.+)", block)
+        if not name_match:
+            continue
+        name = name_match.group(1).strip()
+        
+        # Ищем домены
+        domains_match = re.search(r"Domains:\s*([^\n]+)", block, re.IGNORECASE)
+        if domains_match:
+            domains = domains_match.group(1).strip()
+        else:
+            domains = name  # fallback
+        
+        # Ищем дату окончания
+        expiry_match = re.search(r"Expiry Date:\s*([\d\-:\+\s]+)", block, re.IGNORECASE)
+        if not expiry_match:
+            days_left = -1
+        else:
             expiry_str = expiry_match.group(1).strip()
-            domains = domains_match.group(1).strip() if domains_match else name
-            
             try:
                 expiry_date = datetime.fromisoformat(expiry_str.replace("+00:00", "+00:00"))
                 days_left = (expiry_date - datetime.now(expiry_date.tzinfo)).days
             except Exception as exc:
                 print(f"Ошибка парсинга даты для {name}: {exc}")
                 days_left = -1
-            
-            certs.append(
-                {
-                    "name": name,
-                    "domains": domains,
-                    "days_left": days_left
-                }
-            )
+        
+        certs.append(
+            {
+                "name": name,
+                "domains": domains,
+                "days_left": days_left
+            }
+        )
+    
     return certs
 
 
