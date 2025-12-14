@@ -3,21 +3,19 @@
 import subprocess
 import re
 from datetime import datetime
-import sys
 from pathlib import Path
-import os
+import sys
 
 
-# Определяем BASE_DIR — папку, где лежит этот скрипт
 BASE_DIR = Path(__file__).resolve().parent
-
 CONFIG_FILE = BASE_DIR / ".config"
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def load_config():
     if not CONFIG_FILE.exists():
-        raise FileNotFoundError(CONFIG_FILE)
+        send_alert_to_admins("❌ Конфиг не найден: {CONFIG_FILE}")
+        sys.exit(1)
 
     config = {}
     with open(CONFIG_FILE, "r") as f:
@@ -101,7 +99,6 @@ def send_telegram_message(token, chat_id, message):
 
 
 def send_alert_to_admins(message):
-    """Отправка алерта админам (для ошибок)"""
     try:
         config = load_config()
         token = config["bot_api_key"]
@@ -109,44 +106,61 @@ def send_alert_to_admins(message):
         for chat_id in chat_ids:
             send_telegram_message(token, chat_id, message)
     except Exception:
-        # Если даже конфиг сломан — ничего не поделать
         pass
 
 
 def main():
     config = load_config()
     token = config["bot_api_key"]
+    notify_success = config.get("notify_success", "false").lower() == "true"
 
     output = get_certificates()
     certs = parse_certificates(output)
 
+    # Сертификаты с истекающим сроком (≤7 дней и не просрочены)
     critical_certs = [c for c in certs if 0 <= c["days_left"] <= 7]
+    # Просроченные
     expired_certs = [c for c in certs if c["days_left"] < 0]
+    # Актуальные (>7 дней)
+    valid_certs = [c for c in certs if c["days_left"] > 7]
 
-    if not critical_certs and not expired_certs:
-        return  # Ничего не отправляем
+    # Если есть проблемные — отправляем тревогу
+    if critical_certs or expired_certs:
+        lines = [
+            "<b>ОПОВЕЩЕНИЕ</b>",
+            "<b>ОБ ИСТЕЧЕНИИ</b>",
+            "<b>СРОКОВ SSL-СЕРТИФИКАТОВ</b>",
+            "<b>ДОМЕНОВ</b>",
+            ""
+        ]
 
-    lines = [
-        "<b>ОПОВЕЩЕНИЕ</b>",
-        "<b>ОБ ИСТЕЧЕНИИ</b>",
-        "<b>СРОКОВ SSL-СЕРТИФИКАТОВ</b>",
-        "<b>ДОМЕНОВ</b>",
-        ""
-    ]
+        for cert in sorted(critical_certs, key=lambda x: x["days_left"]):
+            lines.append(f"⚠️ Домен <code>{cert['domains']}</code> — осталось {format_days(cert['days_left'])}")
 
-    for cert in sorted(critical_certs, key=lambda x: x["days_left"]):
-        lines.append(f"⚠️ Домен <code>{cert['domains']}</code> — осталось {format_days(cert['days_left'])}")
+        for cert in expired_certs:
+            lines.append(f"🚨 Домен <code>{cert['domains']}</code> — <b>СРОК ИССЯК</b>")
 
-    for cert in expired_certs:
-        lines.append(f"🚨 Домен <code>{cert['domains']}</code> — <b>СРОК ИССЯК</b>")
+        message = "\n".join(lines)
+        chat_ids = [cid.strip() for cid in config["admins"].split(",") if cid.strip()]
 
-    message = "\n".join(lines)
-    chat_ids = [cid.strip() for cid in config["admins"].split(",") if cid.strip()]
+        for chat_id in chat_ids:
+            send_telegram_message(token, chat_id, message)
 
-    for chat_id in chat_ids:
-        send_telegram_message(token, chat_id, message)
+    # Если включено уведомление об успехе — отправляем список актуальных
+    elif notify_success and valid_certs:
+        lines = [
+            "<b>✅ АКТУАЛЬНЫЕ SSL-СЕРТИФИКАТЫ</b>",
+            ""
+        ]
+        for cert in sorted(valid_certs, key=lambda x: x["days_left"]):
+            lines.append(f"✅ Домен <code>{cert['domains']}</code> — актуален")
+
+        message = "\n".join(lines)
+        chat_ids = [cid.strip() for cid in config["admins"].split(",") if cid.strip()]
+
+        for chat_id in chat_ids:
+            send_telegram_message(token, chat_id, message)
 
 
 if __name__ == "__main__":
-    print("Начали...")
     main()
