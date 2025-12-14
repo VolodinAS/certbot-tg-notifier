@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-import subprocess
 import re
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
-import sys
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,7 +16,7 @@ def load_config():
     if not CONFIG_FILE.exists():
         send_alert_to_admins("❌ Конфиг не найден: {CONFIG_FILE}")
         sys.exit(1)
-
+    
     config = {}
     with open(CONFIG_FILE, "r") as f:
         for line in f:
@@ -53,24 +53,26 @@ def parse_certificates(output):
         name_match = re.search(r"Certificate Name:\s*(.+)", block)
         expiry_match = re.search(r"Expiry Date:\s*([\d\-:\+\s]+)", block)
         domains_match = re.search(r"Domains:\s*(.+)", block)
-
+        
         if name_match and expiry_match:
             name = name_match.group(1).strip()
             expiry_str = expiry_match.group(1).strip()
             domains = domains_match.group(1).strip() if domains_match else name
-
+            
             try:
                 expiry_date = datetime.fromisoformat(expiry_str.replace("+00:00", "+00:00"))
                 days_left = (expiry_date - datetime.now(expiry_date.tzinfo)).days
             except Exception as exc:
                 print(f"Ошибка парсинга даты для {name}: {exc}")
                 days_left = -1
-
-            certs.append({
-                "name": name,
-                "domains": domains,
-                "days_left": days_left
-            })
+            
+            certs.append(
+                {
+                    "name": name,
+                    "domains": domains,
+                    "days_left": days_left
+                }
+            )
     return certs
 
 
@@ -87,13 +89,15 @@ def format_days(days):
 
 def send_telegram_message(token, chat_id, message):
     try:
-        subprocess.run([
-            "curl", "-s", "-X", "POST",
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            "-d", f"chat_id={chat_id}",
-            "-d", f"text={message}",
-            "-d", "parse_mode=HTML"
-        ], check=True, capture_output=True)
+        subprocess.run(
+            [
+                "curl", "-s", "-X", "POST",
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                "-d", f"chat_id={chat_id}",
+                "-d", f"text={message}",
+                "-d", "parse_mode=HTML"
+            ], check=True, capture_output=True
+        )
     except subprocess.CalledProcessError as e:
         print(f"Не удалось отправить в чат {chat_id}: {e}")
 
@@ -113,17 +117,17 @@ def main():
     config = load_config()
     token = config["bot_api_key"]
     notify_success = config.get("notify_success", "false").lower() == "true"
-
+    
     output = get_certificates()
     certs = parse_certificates(output)
-
+    
     # Сертификаты с истекающим сроком (≤7 дней и не просрочены)
     critical_certs = [c for c in certs if 0 <= c["days_left"] <= 7]
     # Просроченные
     expired_certs = [c for c in certs if c["days_left"] < 0]
     # Актуальные (>7 дней)
     valid_certs = [c for c in certs if c["days_left"] > 7]
-
+    
     # Если есть проблемные — отправляем тревогу
     if critical_certs or expired_certs:
         lines = [
@@ -133,19 +137,22 @@ def main():
             "<b>ДОМЕНОВ</b>",
             ""
         ]
-
+        
         for cert in sorted(critical_certs, key=lambda x: x["days_left"]):
-            lines.append(f"⚠️ Домен <code>{cert['domains']}</code> — осталось {format_days(cert['days_left'])}")
-
+            lines.append(
+                f"⚠️ Домен <code>{cert['domains']}</code> — осталось {format_days(cert['days_left'])}"
+            )
+        
         for cert in expired_certs:
             lines.append(f"🚨 Домен <code>{cert['domains']}</code> — <b>СРОК ИССЯК</b>")
-
+        
         message = "\n".join(lines)
         chat_ids = [cid.strip() for cid in config["admins"].split(",") if cid.strip()]
-
+        
         for chat_id in chat_ids:
             send_telegram_message(token, chat_id, message)
-
+    
+    # Если включено уведомление об успехе — отправляем список актуальных
     # Если включено уведомление об успехе — отправляем список актуальных
     elif notify_success and valid_certs:
         lines = [
@@ -153,11 +160,13 @@ def main():
             ""
         ]
         for cert in sorted(valid_certs, key=lambda x: x["days_left"]):
-            lines.append(f"✅ Домен <code>{cert['domains']}</code> — актуален")
-
+            lines.append(
+                f"✅ Домен <code>{cert['domains']}</code> — актуален (дней: {cert['days_left']})"
+            )
+        
         message = "\n".join(lines)
         chat_ids = [cid.strip() for cid in config["admins"].split(",") if cid.strip()]
-
+        
         for chat_id in chat_ids:
             send_telegram_message(token, chat_id, message)
 
